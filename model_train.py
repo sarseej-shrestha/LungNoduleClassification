@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Lung Nodule CAD Training Script
-- Triple-Branch ResNet-18 Architecture
-- MC Dropout during training and validation
-- Heavy augmentation
+Lung Nodule CAD Training - Stable Version
+- Aggressive augmentation (minority class focus)
+- Class weights (3:1 ratio)
+- Lower LR with weight decay
+- Confusion matrix logging
+- Early stopping on val_loss
 """
 
 import os
@@ -12,7 +14,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Subset
 import torchvision.transforms as transforms
 from torchvision import models
 from typing import Tuple, Optional, Dict, List
@@ -21,6 +23,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix
 
 
 SEED = 42
@@ -28,34 +32,42 @@ torch.manual_seed(SEED)
 np.random.seed(SEED)
 random.seed(SEED)
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-BATCH_SIZE = 16
-LEARNING_RATE = 1e-5
-NUM_EPOCHS = 100
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+DEVICE = torch.device("cpu")
+print(f"Device: {DEVICE}")
+
+BATCH_SIZE = 8
+LEARNING_RATE = 1e-4
+WEIGHT_DECAY = 1e-4
+NUM_EPOCHS = 50
 DROPOUT_PROB = 0.5
-NUM_MC_SAMPLES = 10
-PATIENCE = 7
-MODEL_SAVE_PATH = "best_nodule_model.pth"
+PATIENCE = 10
+MODEL_SAVE_PATH = "best_uncertainty_model.pth"
 
 
 class NoduleDataset(Dataset):
-    def __init__(self, npz_dir: str, augment: bool = True):
+    def __init__(
+        self, npz_dir: str, augment: bool = True, target_label: Optional[int] = None
+    ):
         self.npz_files = sorted(glob.glob(os.path.join(npz_dir, "*.npz")))
         self.augment = augment
+        self.target_label = target_label
 
     def __len__(self) -> int:
         return len(self.npz_files)
 
-    def _get_transform(self):
-        if self.augment:
-            return transforms.Compose(
-                [
-                    transforms.ToTensor(),
-                    transforms.RandomHorizontalFlip(p=0.5),
-                    transforms.RandomVerticalFlip(p=0.5),
-                    transforms.RandomRotation(15),
-                ]
-            )
+    def _get_train_transform(self):
+        return transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.RandomRotation(10),
+                transforms.ColorJitter(brightness=0.1, contrast=0.1),
+                transforms.RandomResizedCrop(64, scale=(0.9, 1.1)),
+            ]
+        )
+
+    def _get_val_transform(self):
         return transforms.Compose([transforms.ToTensor()])
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -64,314 +76,254 @@ class NoduleDataset(Dataset):
         axial = data["axial"]
         coronal = data["coronal"]
         sagittal = data["sagittal"]
+        label = int(data.get("label", 0))
 
-        label = 1.0
+        transform = (
+            self._get_train_transform() if self.augment else self._get_val_transform()
+        )
 
-        axial_tensor = self._augment_view(axial)
-        coronal_tensor = self._augment_view(coronal)
-        sagittal_tensor = self._augment_view(sagittal)
+        axial_t = transform((axial * 255).astype(np.uint8))
+        coronal_t = transform((coronal * 255).astype(np.uint8))
+        sagittal_t = transform((sagittal * 255).astype(np.uint8))
 
-        label_tensor = torch.tensor([label], dtype=torch.float32)
-
-        return axial_tensor, coronal_tensor, sagittal_tensor, label_tensor
-
-    def _augment_view(self, view: np.ndarray) -> torch.Tensor:
-        img = (view * 255).astype(np.uint8)
-
-        transform = self._get_transform()
-
-        img_tensor = transform(img)
-
-        return img_tensor.float()
+        return axial_t, coronal_t, sagittal_t, torch.tensor(float(label))
 
 
 class ResNet18Branch(nn.Module):
     def __init__(self, in_channels: int = 1):
         super().__init__()
         self.backbone = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-
-        self.backbone.conv1 = nn.Conv2d(
-            in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False
-        )
-
+        self.backbone.conv1 = nn.Conv2d(in_channels, 64, 7, 2, 3, bias=False)
+        self.backbone.bn1 = nn.BatchNorm2d(64)
         self.backbone.fc = nn.Identity()
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.backbone(x)
-        return x
+    def forward(self, x):
+        return self.backbone(x)
 
 
 class MultiViewNet(nn.Module):
-    def __init__(
-        self, dropout_prob: float = DROPOUT_PROB, shared_backbone: bool = False
-    ):
+    def __init__(self, dropout_prob: float = DROPOUT_PROB):
         super().__init__()
-
-        self.shared_backbone = shared_backbone
-
-        if shared_backbone:
-            self.backbone = ResNet18Branch(in_channels=1)
-        else:
-            self.axial_branch = ResNet18Branch(in_channels=1)
-            self.coronal_branch = ResNet18Branch(in_channels=1)
-            self.sagittal_branch = ResNet18Branch(in_channels=1)
-
-        feature_dim = 512 * 3 if not shared_backbone else 512 * 3
-
+        self.backbone = ResNet18Branch(1)
         self.classifier = nn.Sequential(
             nn.Dropout(p=dropout_prob),
-            nn.Linear(feature_dim, 256),
-            nn.ReLU(inplace=True),
+            nn.Linear(512 * 3, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
             nn.Dropout(p=dropout_prob),
             nn.Linear(256, 1),
         )
 
-    def _get_branch(self, branch_name):
-        if self.shared_backbone:
-            return self.backbone
-        return getattr(self, branch_name)
-
-    def forward(
-        self, axial: torch.Tensor, coronal: torch.Tensor, sagittal: torch.Tensor
-    ) -> torch.Tensor:
-
-        if self.shared_backbone:
-            feat_axial = self.backbone(axial)
-            feat_coronal = self.backbone(coronal)
-            feat_sagittal = self.backbone(sagittal)
-        else:
-            feat_axial = self.axial_branch(axial)
-            feat_coronal = self.coronal_branch(coronal)
-            feat_sagittal = self.sagittal_branch(sagittal)
-
-        fused = torch.cat([feat_axial, feat_coronal, feat_sagittal], dim=1)
-
-        output = self.classifier(fused)
-
-        return output.squeeze(1)
-
-    def predict_with_uncertainty(
-        self,
-        axial: torch.Tensor,
-        coronal: torch.Tensor,
-        sagittal: torch.Tensor,
-        num_samples: int = NUM_MC_SAMPLES,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        self.train()
-
-        outputs = []
-        for _ in range(num_samples):
-            with torch.no_grad():
-                output = self.forward(axial, coronal, sagittal)
-                outputs.append(output)
-
-        stacked = torch.stack(outputs, dim=0)
-
-        mean_pred = torch.mean(stacked, dim=0)
-        std_pred = torch.std(stacked, dim=0)
-
-        return mean_pred, std_pred
+    def forward(self, axial, coronal, sagittal):
+        f1 = self.backbone(axial)
+        f2 = self.backbone(coronal)
+        f3 = self.backbone(sagittal)
+        fused = torch.cat([f1, f2, f3], dim=1)
+        return self.classifier(fused).squeeze(1)
 
 
-def train_epoch(
-    model: nn.Module,
-    dataloader: DataLoader,
-    criterion: nn.Module,
-    optimizer: optim.Optimizer,
-    device: torch.device,
-) -> float:
+def stratified_split(
+    dataset: Dataset, val_size: float = 0.2
+) -> Tuple[List[int], List[int]]:
+    labels = []
+    for f in dataset.npz_files:
+        labels.append(int(np.load(f).get("label", 0)))
+    train_idx, val_idx = train_test_split(
+        np.arange(len(dataset)), test_size=val_size, random_state=SEED, stratify=labels
+    )
+    return train_idx.tolist(), val_idx.tolist()
+
+
+def train_epoch(model, loader, criterion, optimizer, device):
     model.train()
     total_loss = 0.0
-
-    for axial, coronal, sagittal, labels in dataloader:
-        axial = axial.to(device)
-        coronal = coronal.to(device)
-        sagittal = sagittal.to(device)
-        labels = labels.squeeze().to(device)
-
+    for axial, coronal, sagittal, labels in loader:
+        axial, coronal, sagittal, labels = (
+            axial.to(device),
+            coronal.to(device),
+            sagittal.to(device),
+            labels.to(device),
+        )
         optimizer.zero_grad()
-
         outputs = model(axial, coronal, sagittal)
-
         loss = criterion(outputs, labels)
-
         loss.backward()
         optimizer.step()
-
         total_loss += loss.item()
+    return total_loss / len(loader)
 
-    return total_loss / len(dataloader)
 
+def evaluate(model, loader, criterion, device):
+    model.eval()
+    total_loss, all_preds, all_labels = 0.0, [], []
 
-def evaluate(
-    model: nn.Module, dataloader: DataLoader, criterion: nn.Module, device: torch.device
-) -> Dict[str, float]:
-    model.train()
+    with torch.no_grad():
+        for axial, coronal, sagittal, labels in loader:
+            axial, coronal, sagittal, labels = (
+                axial.to(device),
+                coronal.to(device),
+                sagittal.to(device),
+                labels.to(device),
+            )
+            outputs = model(axial, coronal, sagittal)
+            loss = criterion(outputs, labels)
+            total_loss += loss.item()
+            preds = (torch.sigmoid(outputs) > 0.5).float()
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
 
-    total_loss = 0.0
-    all_preds = []
-    all_labels = []
+    cm = confusion_matrix(all_labels, all_preds)
+    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
 
-    for axial, coronal, sagittal, labels in dataloader:
-        axial = axial.to(device)
-        coronal = coronal.to(device)
-        sagittal = sagittal.to(device)
-        labels = labels.squeeze().to(device)
-
-        outputs = model(axial, coronal, sagittal)
-        loss = criterion(outputs, labels)
-
-        total_loss += loss.item()
-
-        preds = torch.sigmoid(outputs.detach())
-        all_preds.extend(preds.cpu().numpy())
-        all_labels.extend(labels.cpu().numpy())
-
-    avg_loss = total_loss / len(dataloader)
-
-    all_preds = np.array(all_preds)
-    all_labels = np.array(all_labels)
-
-    binary_preds = (all_preds > 0.5).astype(float)
-    accuracy = np.mean(binary_preds == all_labels)
+    accuracy = (tp + tn) / (tp + tn + fp + fn) if (tp + tn + fp + fn) > 0 else 0
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+    f1 = (
+        2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+    )
 
     return {
-        "loss": avg_loss,
+        "loss": total_loss / len(loader),
         "accuracy": accuracy,
-        "predictions": all_preds,
-        "labels": all_labels,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "tp": int(tp),
+        "tn": int(tn),
+        "fp": int(fp),
+        "fn": int(fn),
     }
 
 
-def train_model(
-    model: nn.Module,
-    train_loader: DataLoader,
-    val_loader: Optional[DataLoader],
-    num_epochs: int,
-    device: torch.device,
-    save_path: str = MODEL_SAVE_PATH,
-) -> Dict:
+def main():
+    print("=" * 55)
+    print("LUNG NODULE CAD - STABLE TRAINING")
+    print("=" * 55)
 
-    criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    # Load dataset
+    print("\n[1] Loading data...")
+    full_dataset = NoduleDataset("preprocessed", augment=True)
+    print(f"Total samples: {len(full_dataset)}")
 
+    # Calculate class weights: ~3:1 ratio (521 neg / 174 pos = 3.0)
+    all_labels = []
+    for f in full_dataset.npz_files:
+        all_labels.append(int(np.load(f).get("label", 0)))
+    n_pos, n_neg = sum(all_labels), len(all_labels) - sum(all_labels)
+    pos_weight = n_neg / n_pos  # ~3.0
+    print(f"Positive: {n_pos}, Negative: {n_neg}, pos_weight: {pos_weight:.2f}")
+
+    # Stratified split
+    train_idx, val_idx = stratified_split(full_dataset)
+    print(f"Train: {len(train_idx)}, Val: {len(val_idx)}")
+
+    # Create data loaders - VALID SET UNAUGMENTED
+    train_dataset = Subset(full_dataset, train_idx)
+    val_dataset = NoduleDataset("preprocessed", augment=False)
+    val_dataset.npz_files = [full_dataset.npz_files[i] for i in val_idx]
+
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
+
+    # Create model
+    print("\n[2] Creating model...")
+    model = MultiViewNet(DROPOUT_PROB).to(DEVICE)
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Parameters: {total_params:,}")
+
+    # Loss with class weights
+    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight]))
+
+    # Optimizer with weight decay
+    optimizer = optim.Adam(
+        model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
+    )
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=5
+    )
+
+    # Training loop
+    print("\n[3] Training...")
     best_val_loss = float("inf")
     patience_counter = 0
-    history = {"train_loss": [], "val_loss": [], "val_accuracy": []}
+    history = {"train_loss": [], "val_loss": [], "val_acc": [], "val_f1": []}
 
-    for epoch in range(num_epochs):
-        train_loss = train_epoch(model, train_loader, criterion, optimizer, device)
+    for epoch in range(NUM_EPOCHS):
+        train_loss = train_epoch(model, train_loader, criterion, optimizer, DEVICE)
+        val_results = evaluate(model, val_loader, criterion, DEVICE)
+        val_loss = val_results["loss"]
 
-        if val_loader is not None:
-            val_results = evaluate(model, val_loader, criterion, device)
-            val_loss = val_results["loss"]
-            val_acc = val_results["accuracy"]
+        history["train_loss"].append(train_loss)
+        history["val_loss"].append(val_loss)
+        history["val_acc"].append(val_results["accuracy"])
+        history["val_f1"].append(val_results["f1"])
 
-            history["train_loss"].append(train_loss)
-            history["val_loss"].append(val_loss)
-            history["val_accuracy"].append(val_acc)
+        scheduler.step(val_loss)
 
-            print(
-                f"Epoch [{epoch + 1}/{num_epochs}] "
-                f"Train Loss: {train_loss:.4f} | "
-                f"Val Loss: {val_loss:.4f} | "
-                f"Val Acc: {val_acc:.4f}"
+        # Confusion matrix logging
+        print(
+            f"Epoch [{epoch + 1:02d}] "
+            f"Train: {train_loss:.4f} | "
+            f"Val: {val_loss:.4f} | "
+            f"Acc: {val_results['accuracy']:.4f} | "
+            f"F1: {val_results['f1']:.4f} | "
+            f"TP:{val_results['tp']} TN:{val_results['tn']} FP:{val_results['fp']} FN:{val_results['fn']}"
+        )
+
+        # Early stopping - save best model
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "val_loss": val_loss,
+                    "val_accuracy": val_results["accuracy"],
+                    "val_f1": val_results["f1"],
+                    "tp": val_results["tp"],
+                    "fn": val_results["fn"],
+                },
+                MODEL_SAVE_PATH,
             )
-
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                patience_counter = 0
-                torch.save(
-                    {
-                        "epoch": epoch,
-                        "model_state_dict": model.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                        "val_loss": val_loss,
-                        "val_accuracy": val_acc,
-                    },
-                    save_path,
-                )
-                print(f"  -> Saved best model to {save_path}")
-            else:
-                patience_counter += 1
-                print(f"  -> No improvement ({patience_counter}/{PATIENCE})")
-
-            if patience_counter >= PATIENCE:
-                print(f"Early stopping at epoch {epoch + 1}")
-                break
+            marker = " <-- BEST"
         else:
-            history["train_loss"].append(train_loss)
-            print(f"Epoch [{epoch + 1}/{num_epochs}] Train Loss: {train_loss:.4f}")
+            patience_counter += 1
+            marker = ""
 
-    return history
+        if patience_counter >= PATIENCE:
+            print(f"\nEarly stopping at epoch {epoch + 1}")
+            break
 
+    # Plot training curve
+    print("\n[4] Saving training curve...")
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 
-def plot_training_history(history: Dict, save_path: str = "training_curve.png"):
-    plt.figure(figsize=(10, 6))
+    epochs = range(1, len(history["train_loss"]) + 1)
+    axes[0].plot(epochs, history["train_loss"], "o-", label="Train")
+    axes[0].plot(epochs, history["val_loss"], "s-", label="Val")
+    axes[0].set_ylabel("Loss")
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
 
-    plt.plot(history["train_loss"], label="Train Loss", marker="o", markersize=3)
-    plt.plot(history["val_loss"], label="Validation Loss", marker="s", markersize=3)
-
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title("Training vs Validation Loss")
-    plt.legend()
-    plt.grid(True, alpha=0.3)
+    axes[1].plot(epochs, history["val_acc"], "o-", label="Acc")
+    axes[1].plot(epochs, history["val_f1"], "s-", label="F1")
+    axes[1].set_ylabel("Score")
+    axes[1].legend()
+    axes[1].grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig(save_path, dpi=150)
+    plt.savefig("training_curve.png", dpi=100)
     plt.close()
 
-    print(f"Training curve saved to {save_path}")
-
-
-def main():
-    print(f"Using device: {DEVICE}")
-
-    print("Loading dataset...")
-    dataset = NoduleDataset("preprocessed", augment=True)
-
-    train_size = int(0.8 * len(dataset))
-    val_size = len(dataset) - train_size
-
-    train_dataset, val_dataset = torch.utils.data.random_split(
-        dataset, [train_size, val_size]
-    )
-
-    print(f"Total samples: {len(dataset)}, Train: {train_size}, Val: {val_size}")
-
-    train_loader = DataLoader(
-        train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0
-    )
-    val_loader = DataLoader(
-        val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0
-    )
-
-    print("Creating model (3 separate ResNet-18 branches)...")
-    model = MultiViewNet(dropout_prob=DROPOUT_PROB, shared_backbone=False)
-    model = model.to(DEVICE)
-
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Total parameters: {total_params:,}")
-    print(f"Trainable parameters: {trainable_params:,}")
-
-    print("\nStarting training...")
-    print(f"Learning rate: {LEARNING_RATE}, Patience: {PATIENCE}")
-    history = train_model(
-        model,
-        train_loader,
-        val_loader,
-        num_epochs=NUM_EPOCHS,
-        device=DEVICE,
-        save_path=MODEL_SAVE_PATH,
-    )
-
-    print("\nPlotting training history...")
-    plot_training_history(history, save_path="training_curve.png")
-
-    print("\nTraining complete!")
-    print(f"Best model saved to {MODEL_SAVE_PATH}")
+    # Summary
+    print("\n" + "=" * 55)
+    print("FINAL RESULTS")
+    print("=" * 55)
+    print(f"Best Val Loss: {best_val_loss:.4f}")
+    print(f"Final Acc: {history['val_acc'][-1]:.4f}")
+    print(f"Final F1: {history['val_f1'][-1]:.4f}")
+    print("=" * 55)
 
 
 if __name__ == "__main__":

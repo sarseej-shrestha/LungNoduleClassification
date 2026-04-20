@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """
 Lung Nodule CAD Preprocessing Pipeline
-- Coordinate Mapping: SimpleITK TransformPhysicalPointToIndex
-- Axis Ordering: SimpleITK (x,y,z) -> NumPy (z,y,x)
-- CLAHE Enhancement: cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-- Windowing: -1000 to 400 HU
-- Visualization: With crosshair verification
+- Multi-Subset Support: subset0.zip through subset5.zip
+- Hard Negative Mining: 3 negatives per positive (chest wall + random lung)
+- Target: ~2000 total samples
 """
 
 import zipfile
-import io
 import os
 import numpy as np
 import pandas as pd
@@ -21,6 +18,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from typing import Tuple, Optional, Dict, List
 import tempfile
+import random
 
 
 HU_RESCALING_INTERCEPT = -1024
@@ -28,6 +26,7 @@ HU_LOWER = -1000
 HU_UPPER = 400
 CUBE_SIZE = 64
 OUTPUT_DIR = "preprocessed"
+NEGATIVES_PER_POSITIVE = 3
 
 
 class NoduleExtractor:
@@ -61,10 +60,8 @@ class NoduleExtractor:
     ) -> Tuple[int, int, int]:
         mhd_path = self.extracted_files[series_uid][0]
         img = sitk.ReadImage(mhd_path)
-
         itk_index = img.TransformPhysicalPointToIndex(world_coords)
         x, y, z = itk_index
-
         return (z, y, x)
 
     def load_raw_volume(self, series_uid: str) -> np.ndarray:
@@ -152,14 +149,56 @@ class NoduleExtractor:
             "axial_clahe": axial_clahe,
             "coronal_clahe": coronal_clahe,
             "sagittal_clahe": sagittal_clahe,
-            "center_voxel": (mid_x, mid_y, mid_z),
         }
+
+    def generate_negatives(
+        self,
+        series_uid: str,
+        existing_voxels: List[Tuple[int, int, int]],
+        num_negatives: int = NEGATIVES_PER_POSITIVE,
+    ) -> List[Optional[Tuple[int, int, int]]]:
+        volume = self.load_raw_volume(series_uid)
+        d, h, w = volume.shape
+
+        half = CUBE_SIZE // 2
+        negatives = []
+
+        for neg_type in range(num_negatives):
+            for _ in range(50):
+                if neg_type == 0:
+                    cx = np.random.randint(half, w // 4)
+                    cy = np.random.randint(half, h - half)
+                    cz = np.random.randint(half, d - half)
+                else:
+                    cx = np.random.randint(half, w - half)
+                    cy = np.random.randint(half, h - half)
+                    cz = np.random.randint(half, d - half)
+
+                is_too_close = False
+                for ex_vox in existing_voxels:
+                    dist = np.sqrt(
+                        (cx - ex_vox[2]) ** 2
+                        + (cy - ex_vox[1]) ** 2
+                        + (cz - ex_vox[0]) ** 2
+                    )
+                    if dist < CUBE_SIZE:
+                        is_too_close = True
+                        break
+
+                if not is_too_close:
+                    negatives.append((cz, cy, cx))
+                    break
+            else:
+                negatives.append(None)
+
+        return negatives
 
     def process_nodule(
         self,
         series_uid: str,
         world_coords: Tuple[float, float, float],
         diameter_mm: float,
+        label: int = 1,
     ) -> Optional[Dict]:
         if series_uid not in self.extracted_files:
             return None
@@ -167,13 +206,11 @@ class NoduleExtractor:
         voxel_coords = self.world_to_voxel(series_uid, world_coords)
 
         raw_volume = self.load_raw_volume(series_uid)
-
         hu_volume = self.normalize_to_hu(raw_volume)
         windowed_volume = self.apply_lung_window(hu_volume)
         normalized_volume = self.rescale_to_unit(windowed_volume)
 
         cube = self.extract_cube(normalized_volume, voxel_coords)
-
         slices = self.extractOrthogonalSlices(cube)
 
         return {
@@ -181,6 +218,7 @@ class NoduleExtractor:
             "world_coords": world_coords,
             "voxel_coords": voxel_coords,
             "diameter_mm": diameter_mm,
+            "label": label,
             "cube": cube,
             "slices": slices,
         }
@@ -192,126 +230,53 @@ class NoduleExtractor:
         shutil.rmtree(self.temp_dir)
 
 
-def visualize_nodule(
-    result: Dict, fig_size: Tuple[int, int] = (12, 8), save_path: str = None
-):
-    slices = result["slices"]
-    center = slices["center_voxel"]
-    h, w = slices["axial"].shape
-
-    fig, axes = plt.subplots(2, 3, figsize=fig_size)
-
-    titles = ["Axial", "Coronal", "Sagittal"]
-    raw_slices = [slices["axial"], slices["coronal"], slices["sagittal"]]
-    clahe_slices = [
-        slices["axial_clahe"],
-        slices["coronal_clahe"],
-        slices["sagittal_clahe"],
-    ]
-
-    for row_idx, (slice_list, label) in enumerate(
-        [(raw_slices, "Before CLAHE"), (clahe_slices, "After CLAHE")]
-    ):
-        for ax_idx, (ax, img, title) in enumerate(
-            zip(axes[row_idx], slice_list, titles)
-        ):
-            ax.imshow(img, cmap="gray", vmin=0, vmax=1)
-
-            cx, cy = w // 2, h // 2
-            ax.axvline(x=cx, color="red", linewidth=1, linestyle="--", alpha=0.7)
-            ax.axhline(y=cy, color="red", linewidth=1, linestyle="--", alpha=0.7)
-
-            ax.set_title(f"{label}: {title}")
-            ax.axis("off")
-
-    series_uid = result["series_uid"][:30]
-    fig.suptitle(
-        f"Nodule: {series_uid}...\nVoxel: {result['voxel_coords']}, Diameter: {result['diameter_mm']:.1f}mm"
-    )
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path, dpi=100)
-        plt.close()
-    return fig
-
-
 def load_annotations(csv_path: str) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
     return df
 
 
-def test_single_nodule(
-    annotations_path: str = "annotations.csv", subset_zip_path: str = "subset0.zip"
-):
-    print("Loading annotations...")
-    df = load_annotations(annotations_path)
-    print(f"Found {len(df)} annotations")
+def process_subset(
+    subset_zip_path: str, annotations_df: pd.DataFrame, subset_idx: int
+) -> Tuple[int, int, int, int]:
+    """Process a single subset with hard negative mining."""
 
-    print("Initializing extractor...")
+    print(f"\nProcessing {subset_zip_path}...")
     extractor = NoduleExtractor(subset_zip_path)
     print(f"Loaded {len(extractor.extracted_files)} scans")
 
-    annot_series = set(df["seriesuid"].unique())
+    annot_series = set(annotations_df["seriesuid"].unique())
     zip_series = set(extractor.extracted_files.keys())
     common_series = annot_series & zip_series
     print(f"Matching series: {len(common_series)}")
 
-    if not common_series:
-        print("No matching series found!")
-        return
-
-    first_series = list(common_series)[0]
-    first_row = df[df["seriesuid"] == first_series].iloc[0]
-    world_coords = (first_row["coordX"], first_row["coordY"], first_row["coordZ"])
-    diameter = first_row["diameter_mm"]
-
-    print(f"Processing test nodule: {first_series[:50]}...")
-    print(f"World coords: {world_coords}")
-    result = extractor.process_nodule(first_series, world_coords, diameter)
-
-    if result:
-        print(f"ITK Voxel (z,y,x): {result['voxel_coords']}")
-        print(f"Cube shape: {result['cube'].shape}")
-
-        visualize_nodule(result, save_path="sample_nodule.png")
-        print("Saved sample_nodule.png")
-
-    extractor.close()
-    return result
-
-
-def main():
-    print("Loading annotations...")
-    annotations = load_annotations("annotations.csv")
-    print(f"Found {len(annotations)} annotations")
-
-    print("Initializing extractor...")
-    extractor = NoduleExtractor("subset0.zip")
-    print(f"Loaded {len(extractor.extracted_files)} scans")
-
-    annot_series = set(annotations["seriesuid"].unique())
-    zip_series = set(extractor.extracted_files.keys())
-    common_series = annot_series & zip_series
-    print(f"Matching series: {len(common_series)}")
-
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-    processed_count = 0
+    positive_count = 0
+    negative_count = 0
     failed_count = 0
+    skipped_count = 0
 
     for series_uid in common_series:
-        series_annots = annotations[annotations["seriesuid"] == series_uid]
+        series_annots = annotations_df[annotations_df["seriesuid"] == series_uid]
+
+        existing_voxels = []
 
         for idx, row in series_annots.iterrows():
+            output_path = os.path.join(
+                OUTPUT_DIR, f"subset{subset_idx}_{series_uid}_{idx}_label_1.npz"
+            )
+
+            if os.path.exists(output_path):
+                skipped_count += 1
+                continue
+
             world_coords = (row["coordX"], row["coordY"], row["coordZ"])
             diameter = row["diameter_mm"]
 
-            result = extractor.process_nodule(series_uid, world_coords, diameter)
+            result = extractor.process_nodule(
+                series_uid, world_coords, diameter, label=1
+            )
 
             if result is not None:
                 slices = result["slices"]
-                output_path = os.path.join(OUTPUT_DIR, f"{series_uid}_{idx}.npz")
                 np.savez_compressed(
                     output_path,
                     cube=result["cube"],
@@ -324,19 +289,95 @@ def main():
                     series_uid=series_uid,
                     voxel_coords=np.array(result["voxel_coords"]),
                     diameter_mm=diameter,
+                    label=1,
+                    subset_idx=subset_idx,
                 )
-                processed_count += 1
+                positive_count += 1
+                existing_voxels.append(result["voxel_coords"])
             else:
                 failed_count += 1
 
+        negatives = extractor.generate_negatives(
+            series_uid, existing_voxels, NEGATIVES_PER_POSITIVE
+        )
+
+        for neg_idx, neg_voxel in enumerate(negatives):
+            if neg_voxel is None:
+                continue
+
+            neg_output_path = os.path.join(
+                OUTPUT_DIR,
+                f"subset{subset_idx}_{series_uid}_{idx}_label_0_{neg_idx}.npz",
+            )
+
+            if os.path.exists(neg_output_path):
+                continue
+
+            raw_volume = extractor.load_raw_volume(series_uid)
+            hu_volume = extractor.normalize_to_hu(raw_volume)
+            windowed_volume = extractor.apply_lung_window(hu_volume)
+            normalized_volume = extractor.rescale_to_unit(windowed_volume)
+
+            cube = extractor.extract_cube(normalized_volume, neg_voxel)
+            slices = extractor.extractOrthogonalSlices(cube)
+
+            np.savez_compressed(
+                neg_output_path,
+                cube=cube,
+                axial=slices["axial_clahe"],
+                coronal=slices["coronal_clahe"],
+                sagittal=slices["sagittal_clahe"],
+                axial_raw=slices["axial"],
+                coronal_raw=slices["coronal"],
+                sagittal_raw=slices["sagittal"],
+                series_uid=series_uid,
+                voxel_coords=np.array(neg_voxel),
+                diameter_mm=0.0,
+                label=0,
+                subset_idx=subset_idx,
+            )
+            negative_count += 1
+            existing_voxels.append(neg_voxel)
+
     extractor.close()
-    print(f"Done! Processed: {processed_count}, Failed: {failed_count}")
+    print(
+        f"Subset {subset_idx}: Positive: {positive_count}, Negative: {negative_count}, Failed: {failed_count}, Skipped: {skipped_count}"
+    )
+    return positive_count, negative_count, failed_count, skipped_count
+
+
+def main():
+    subset_zips = [f"subset{i}.zip" for i in range(6)]
+
+    print("Loading annotations...")
+    annotations = load_annotations("annotations.csv")
+    print(f"Found {len(annotations)} annotations")
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    total_positive = 0
+    total_negative = 0
+    total_failed = 0
+    total_skipped = 0
+
+    for idx, subset_zip in enumerate(subset_zips):
+        if not os.path.exists(subset_zip):
+            print(f"Warning: {subset_zip} not found, skipping...")
+            continue
+
+        pos, neg, fail, skip = process_subset(subset_zip, annotations, idx)
+        total_positive += pos
+        total_negative += neg
+        total_failed += fail
+        total_skipped += skip
+
+    print(
+        f"\n=== Total: Positive: {total_positive}, Negative: {total_negative}, Failed: {total_failed}, Skipped: {total_skipped} ==="
+    )
+    print(
+        f"Target: ~{total_positive * 4} total samples (1:{NEGATIVES_PER_POSITIVE} ratio)"
+    )
 
 
 if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) > 1 and sys.argv[1] == "--test":
-        test_single_nodule()
-    else:
-        main()
+    main()
