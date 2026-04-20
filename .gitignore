@@ -8,3 +8,6 @@ subset6.zip
 venv
 AGENTS.md
 annotations.csv
+*.pth
+preprocessed/
+*.png
