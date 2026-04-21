@@ -12,4 +12,3 @@ annotations.csv
 preprocessed/
 *.png
 subse6_data/
-test_model.pth
