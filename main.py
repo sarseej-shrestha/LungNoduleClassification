@@ -25,7 +25,7 @@ from sklearn.metrics import confusion_matrix, precision_score, recall_score, f1_
 
 # Import local modules
 import config
-from architecture import create_model, load_model, SharedResNet
+from architecture import create_model, load_model, MultiViewNet
 
 
 # ===================== DATA =====================
