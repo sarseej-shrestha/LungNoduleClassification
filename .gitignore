@@ -1,14 +1,30 @@
-subset0.zip
-subset1.zip
-subset2.zip
-subset3.zip
-subset4.zip
-subset5.zip
-subset6.zip
-venv
-AGENTS.md
-annotations.csv
-*.pth
-preprocessed/
-*.png
-subset6_data/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+
+# Large data files (raw DICOM/CT data)
+input/*.zip
+input/subset6/*.raw
+input/subset6/*.mhd
+# Preprocessed data
+input/preprocessed/*.npz
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
