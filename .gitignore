@@ -15,6 +15,11 @@ input/subset6/*.mhd
 # Preprocessed data
 input/preprocessed/*.npz
 
+# Model weights (keep only active models)
+models/best_nodule_model.pth
+models/test_model.pth
+models/*.pth.bak
+
 # IDE
 .vscode/
 .idea/
