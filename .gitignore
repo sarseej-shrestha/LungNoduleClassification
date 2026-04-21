@@ -11,4 +11,4 @@ annotations.csv
 *.pth
 preprocessed/
 *.png
-subse6_data/
+subset6_data/
