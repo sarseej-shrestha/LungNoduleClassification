@@ -5,16 +5,16 @@ Central Configuration for Lung Nodule CAD System V2.0 - Calibrated Framework
 
 # Data Configuration
 SUBSET_LIST = [
-    "subset0.zip",
-    "subset1.zip",
-    "subset2.zip",
-    "subset3.zip",
-    "subset4.zip",
-    "subset5.zip",
+    "input/subset0.zip",
+    "input/subset1.zip",
+    "input/subset2.zip",
+    "input/subset3.zip",
+    "input/subset4.zip",
+    "input/subset5.zip",
 ]
 IMG_SIZE = 64
-OUTPUT_DIR = "preprocessed"
-ANNOTATIONS_FILE = "annotations.csv"
+OUTPUT_DIR = "input/preprocessed"
+ANNOTATIONS_FILE = "input/annotations.csv"
 
 # Model Configuration
 BACKBONE = "resnet18"
@@ -44,8 +44,8 @@ UNCERTAINTY_THRESHOLD = 0.3  # High uncertainty threshold
 # Paths
 MODEL_DIR = "models"
 BEST_MODEL_PATH = f"{MODEL_DIR}/calibrated_v2.pth"
-TRAINING_CURVE_PATH = "training_curve_v2.png"
-UNCERTAINTY_GRID_PATH = "uncertainty_grid_v2.png"
+TRAINING_CURVE_PATH = "output/training_curve_v2.png"
+UNCERTAINTY_GRID_PATH = "output/uncertainty_grid_v2.png"
 
 # Random Seed
 SEED = 42

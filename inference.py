@@ -308,8 +308,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", default="models/best_uncertainty_model.pth")
-    parser.add_argument("--data_dir", default="subset6_data/subset6")
-    parser.add_argument("--annotations_file", default="annotations.csv")
+    parser.add_argument("--data_dir", default="input/subset6")
+    parser.add_argument("--annotations_file", default="input/annotations.csv")
     args = parser.parse_args()
 
     device = torch.device("cpu")

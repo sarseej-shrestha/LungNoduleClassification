@@ -55,7 +55,7 @@ def get_axial(cube):
 
 
 def run_analysis(model_path, data_dir, annotations_file):
-    os.makedirs("clinical_output", exist_ok=True)
+    os.makedirs("output", exist_ok=True)
 
     device = torch.device("cpu")
     model, checkpoint = load_model_v2(model_path, strict=False)
@@ -195,14 +195,14 @@ def generate_plots(results, high_risk, mean_unc):
             )
             ax.axis("off")
 
-    plt.tight_layout()
-    plt.savefig("clinical_output/edge_cases.png", dpi=80)
+plt.tight_layout()
+    plt.savefig("output/edge_cases.png", dpi=80)
     plt.close()
-
+    
     # 2. MC Distributions
     fig, axes = plt.subplots(2, 5, figsize=(20, 8))
     fig.suptitle("MC Dropout Distributions", fontsize=14, fontweight="bold")
-
+    
     high_cases = high_unc[:5]
     low_cases = low_unc[:5]
     for row_idx, cases in enumerate([high_cases, low_cases]):
@@ -214,9 +214,9 @@ def generate_plots(results, high_risk, mean_unc):
             ax.axvline(0.5, color="gray", linestyle=":", linewidth=1)
             ax.set_xlim(0, 1)
             ax.set_title(f"Unc: {case['uncertainty']:.3f}", fontsize=10)
-
+    
     plt.tight_layout()
-    plt.savefig("clinical_output/mc_distributions.png", dpi=80)
+    plt.savefig("output/mc_distributions.png", dpi=80)
     plt.close()
 
     # 3. Summary Gallery
@@ -296,11 +296,11 @@ def generate_plots(results, high_risk, mean_unc):
         ax.axis("off")
 
     plt.tight_layout()
-    plt.savefig("clinical_output/summary_gallery.png", dpi=100, bbox_inches="tight")
+    plt.savefig("output/summary_gallery.png", dpi=100, bbox_inches="tight")
     plt.close()
 
-    print("✓ Saved: edge_cases.png, mc_distributions.png, summary_gallery.png")
+    print("✓ Saved to output/: edge_cases.png, mc_distributions.png, summary_gallery.png")
 
 
 if __name__ == "__main__":
-    run_analysis("models/calibrated_v2.pth", "subset6_data/subset6", "annotations.csv")
+    run_analysis("models/calibrated_v2.pth", "input/subset6", "input/annotations.csv")

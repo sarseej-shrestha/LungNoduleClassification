@@ -503,7 +503,7 @@ def main():
         print("=" * 60)
 
         subset_idx = int(args.subset)
-        subset_zip = f"subset{subset_idx}.zip"
+        subset_zip = f"input/subset{subset_idx}.zip"
 
         if not os.path.exists(subset_zip):
             print(f"Error: {subset_zip} not found")

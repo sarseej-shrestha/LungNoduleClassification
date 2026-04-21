@@ -299,8 +299,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", default="models/calibrated_v2.pth")
-    parser.add_argument("--data_dir", default="subset6_data/subset6")
-    parser.add_argument("--annotations_file", default="annotations.csv")
+    parser.add_argument("--data_dir", default="input/subset6")
+    parser.add_argument("--annotations_file", default="input/annotations.csv")
     args = parser.parse_args()
 
     run_inference_v2(args.model_path, args.data_dir, args.annotations_file)

@@ -66,8 +66,8 @@ def run():
     print("V1 and V2 loaded")
 
     # Load data
-    annot = pd.read_csv("annotations.csv")
-    files = sorted(glob.glob("subset6_data/subset6/*.mhd"))
+    annot = pd.read_csv("input/annotations.csv")
+    files = sorted(glob.glob("input/subset6/*.mhd"))
     print(f"Processing {len(files)} files...")
 
     results = []
@@ -225,7 +225,7 @@ def run():
     )
 
     plt.tight_layout()
-    plt.savefig("ensemble_master_gallery.png", dpi=80)
+    plt.savefig("output/ensemble_master_gallery.png", dpi=80)
     plt.close()
 
     print("✓ Saved: ensemble_master_gallery.png")
