@@ -18,7 +18,7 @@ import torchvision.transforms as transforms
 from torchvision import models
 import SimpleITK as sitk
 
-from src.config_v2 import config_v2
+from src import config_v2 as config_v2
 from src.architecture_v2 import (
     MCDropout,
     ResNet18WithDeepDropout,

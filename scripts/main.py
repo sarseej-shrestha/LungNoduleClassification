@@ -27,7 +27,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import confusion_matrix, precision_score, recall_score, f1_score
 
 # Import from src
-from src.config import config
+from src import config_v1 as config
 from src.architecture import create_model, load_model, MultiViewNet
 
 
