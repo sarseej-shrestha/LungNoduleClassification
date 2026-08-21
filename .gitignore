@@ -33,3 +33,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# LIDC-IDRI raw DICOM (never lives in-repo; moved out and .gitignored as a safety net)
+input/manifest*/
+input/LIDC-IDRI*/
