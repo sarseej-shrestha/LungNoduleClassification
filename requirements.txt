@@ -7,6 +7,7 @@ SimpleITK>=2.3
 opencv-python>=4.8
 pydicom>=2.4
 pylidc>=0.2.3          # LIDC-IDRI annotation parsing (XML consensus, malignancy ratings)
+setuptools<81          # pylidc is unmaintained and imports pkg_resources, removed in setuptools>=81
 
 # Deep learning
 torch>=2.2
