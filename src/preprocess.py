@@ -13,6 +13,7 @@ so an interrupted run can simply be restarted.
 """
 
 import argparse
+import hashlib
 import os
 import shutil
 
@@ -101,6 +102,13 @@ def save_sample(path, cube, slices, **meta):
     return True
 
 
+def series_tag(series_uid):
+    """Short unique tag for filenames. Every LIDC-IDRI series_uid shares the same
+    ~12-char organizational OID prefix ("1.3.6.1.4.1."), so a naive prefix slice
+    collides across different scans of the same patient - use a hash instead."""
+    return hashlib.md5(series_uid.encode()).hexdigest()[:10]
+
+
 def cluster_centroid(cluster):
     _, bbox, _ = consensus(cluster, clevel=0.5)
     return tuple(int((b.start + b.stop) // 2) for b in bbox)
@@ -130,7 +138,7 @@ def process_scan(scan, output_dir, negatives_per_positive, rng):
         centroids.append(centroid)
 
         out_path = os.path.join(
-            output_dir, f"{scan.patient_id}_{scan.series_instance_uid[:12]}_c{i}_pos.npz"
+            output_dir, f"{scan.patient_id}_{series_tag(scan.series_instance_uid)}_c{i}_pos.npz"
         )
         if os.path.exists(out_path):
             pos_count += 1
@@ -172,7 +180,7 @@ def process_scan(scan, output_dir, negatives_per_positive, rng):
     neg_count = 0
     for neg_idx in range(n_negatives):
         out_path = os.path.join(
-            output_dir, f"{scan.patient_id}_{scan.series_instance_uid[:12]}_n{neg_idx}_neg.npz"
+            output_dir, f"{scan.patient_id}_{series_tag(scan.series_instance_uid)}_n{neg_idx}_neg.npz"
         )
         if os.path.exists(out_path):
             neg_count += 1
