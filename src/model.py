@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-Lung Nodule CAD - V2.0 Architecture (Calibrated Framework)
-Deep Dropout: Dropout injected inside each BasicBlock + MCDropout wrapper
+Lung Nodule CAD - 3-branch ResNet-18 with Deep Dropout + MC Dropout + Temperature Scaling
 """
 
 import torch
 import torch.nn as nn
 from torchvision import models
-from src import config_v2 as config_v2
+from src import config
 
 
 class MCDropout(nn.Module):
@@ -71,22 +70,14 @@ class DropoutBasicBlock(nn.Module):
 
 def inject_dropout_into_resnet(resnet, dropout_prob=0.2):
     """Inject dropout into all BasicBlocks of a ResNet."""
-    # Layer 1
     for i, block in enumerate(resnet.layer1):
         resnet.layer1[i] = DropoutBasicBlock(block, dropout_prob)
-
-    # Layer 2
     for i, block in enumerate(resnet.layer2):
         resnet.layer2[i] = DropoutBasicBlock(block, dropout_prob)
-
-    # Layer 3
     for i, block in enumerate(resnet.layer3):
         resnet.layer3[i] = DropoutBasicBlock(block, dropout_prob)
-
-    # Layer 4
     for i, block in enumerate(resnet.layer4):
         resnet.layer4[i] = DropoutBasicBlock(block, dropout_prob)
-
     return resnet
 
 
@@ -96,14 +87,12 @@ class ResNet18WithDeepDropout(nn.Module):
     def __init__(self, in_channels=1, internal_dropout_prob=0.2):
         super().__init__()
 
-        # Use standard ResNet18 and modify for grayscale
         self.backbone = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
 
         # Replace first conv for grayscale input
         self.backbone.conv1 = nn.Conv2d(in_channels, 64, 7, 2, 3, bias=False)
         self.backbone.bn1 = nn.BatchNorm2d(64)
 
-        # Build sequential containers with dropout for each layer
         self.layer1 = nn.Sequential(
             *[
                 DropoutBasicBlock(block, internal_dropout_prob)
@@ -129,7 +118,6 @@ class ResNet18WithDeepDropout(nn.Module):
             ]
         )
 
-        # Keep reference to other components
         self.conv1 = self.backbone.conv1
         self.bn1 = self.backbone.bn1
         self.relu = self.backbone.relu
@@ -153,28 +141,27 @@ class ResNet18WithDeepDropout(nn.Module):
         return x
 
 
-class SharedResNet_V2(nn.Module):
-    """V2.0 MultiView Network with Deep Dropout + Temperature Scaling."""
+class NoduleClassifier(nn.Module):
+    """3-branch (axial/coronal/sagittal) MultiView Network with Deep Dropout,
+    MC Dropout, and Temperature Scaling."""
 
     def __init__(self, dropout_prob=None, internal_dropout_prob=None):
-        dropout_prob = dropout_prob or config_v2.DROPOUT_PROB
-        internal_dropout_prob = internal_dropout_prob or config_v2.INTERNAL_DROPOUT_PROB
+        dropout_prob = dropout_prob or config.DROPOUT_PROB
+        internal_dropout_prob = internal_dropout_prob or config.INTERNAL_DROPOUT_PROB
 
         super().__init__()
 
-        # Shared backbone with internal dropout
         self.backbone = ResNet18WithDeepDropout(
             in_channels=1, internal_dropout_prob=internal_dropout_prob
         )
 
-        # Classification head with MCDropout (keeps dropout active in eval)
         self.mc_dropout = MCDropout(p=dropout_prob)
         self.fc1 = nn.Linear(512 * 3, 256)
         self.relu = nn.ReLU()
         self.fc2 = nn.Linear(256, 1)
 
-        self.temperature = config_v2.TEMPERATURE
-        self.mc_samples = config_v2.MC_SAMPLES
+        self.temperature = config.TEMPERATURE
+        self.mc_samples = config.MC_SAMPLES
 
     def forward(self, axial, coronal, sagittal):
         f1 = self.backbone(axial)
@@ -183,7 +170,6 @@ class SharedResNet_V2(nn.Module):
 
         fused = torch.cat([f1, f2, f3], dim=1)
 
-        # Apply MCDropout to classification head
         x = self.mc_dropout(fused)
         x = self.fc1(x)
         x = self.relu(x)
@@ -204,7 +190,6 @@ class SharedResNet_V2(nn.Module):
 
         logits_stack = torch.stack(logits_list, dim=0)
 
-        # Temperature scaling: probs = sigmoid(logits / temperature)
         scaled_logits = logits_stack / self.temperature
         probs = torch.sigmoid(scaled_logits)
 
@@ -225,24 +210,24 @@ class SharedResNet_V2(nn.Module):
         return prob
 
 
-def create_model_v2():
-    return SharedResNet_V2(
-        dropout_prob=config_v2.DROPOUT_PROB,
-        internal_dropout_prob=config_v2.INTERNAL_DROPOUT_PROB,
+def create_model():
+    return NoduleClassifier(
+        dropout_prob=config.DROPOUT_PROB,
+        internal_dropout_prob=config.INTERNAL_DROPOUT_PROB,
     )
 
 
-def load_model_v2(path, strict=False):
+def load_model(path, strict=False):
     import os
 
-    os.makedirs(config_v2.MODEL_DIR, exist_ok=True)
+    os.makedirs(config.MODEL_DIR, exist_ok=True)
 
     if not os.path.exists(path):
         raise FileNotFoundError(f"Model not found: {path}")
 
     try:
         checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-        model = create_model_v2()
+        model = create_model()
         model.load_state_dict(checkpoint["model_state_dict"], strict=strict)
         return model, checkpoint
     except Exception as e:
@@ -252,5 +237,5 @@ def load_model_v2(path, strict=False):
 
 def apply_temperature_scaling(logits, temperature=None):
     """Apply temperature scaling to logits."""
-    temperature = temperature or config_v2.TEMPERATURE
+    temperature = temperature or config.TEMPERATURE
     return torch.sigmoid(logits / temperature)

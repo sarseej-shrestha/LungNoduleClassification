@@ -1,20 +1,14 @@
 #!/usr/bin/env python3
 """
-Central Configuration for Lung Nodule CAD System V2.0 - Calibrated Framework
+Central Configuration for Lung Nodule CAD System - LIDC-IDRI Rebuild
 """
 
-# Data Configuration
-SUBSET_LIST = [
-    "input/subset0.zip",
-    "input/subset1.zip",
-    "input/subset2.zip",
-    "input/subset3.zip",
-    "input/subset4.zip",
-    "input/subset5.zip",
-]
-IMG_SIZE = 64
+# Data locations (raw DICOM lives outside the repo, never git-tracked)
+RAW_DICOM_DIR = "/Users/userselu/Downloads/LIDC-IDRI-raw/LIDC-IDRI"
 OUTPUT_DIR = "input/preprocessed"
-ANNOTATIONS_FILE = "input/annotations.csv"
+SPLITS_FILE = "input/splits/patient_splits.json"
+
+IMG_SIZE = 64
 
 # Model Configuration
 BACKBONE = "resnet18"
@@ -40,6 +34,10 @@ NEGATIVES_PER_POSITIVE = 3  # Hard negatives per positive
 
 # Uncertainty Configuration
 UNCERTAINTY_THRESHOLD = 0.3  # High uncertainty threshold
+
+# Patient-level splitting (see src/splits.py)
+TEST_HOLDOUT_FRACTION = 0.175  # ~15-20% of patients, locked away, touched once
+N_FOLDS = 5
 
 # Paths
 MODEL_DIR = "models"
