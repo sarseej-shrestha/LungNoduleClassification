@@ -22,7 +22,7 @@ TEMPERATURE = 1.5  # Logit softening factor
 MC_SAMPLES = 50  # High-fidelity variance passes
 
 # Training Configuration
-BATCH_SIZE = 8
+BATCH_SIZE = 32
 LEARNING_RATE = 2e-4
 WEIGHT_DECAY = 1e-4
 NUM_EPOCHS = 50
