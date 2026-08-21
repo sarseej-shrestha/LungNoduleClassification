@@ -27,8 +27,8 @@ from src.model import load_model
 
 
 class GradCAM:
-    """Hooks the shared backbone's layer4. The backbone is called 3x per forward
-    pass (axial, coronal, sagittal, in that order - see NoduleClassifier.forward).
+    """Hooks a shared-backbone layer. The backbone is called 3x per forward pass
+    (axial, coronal, sagittal, in that order - see NoduleClassifier.forward).
     Forward hooks fire in call order, which is an unambiguous PyTorch guarantee.
     Backward-hook firing order for a module reused multiple times in one forward
     pass is NOT part of the public API contract (it depends on autograd engine
@@ -37,14 +37,23 @@ class GradCAM:
     before being replaced with this approach: each view's gradient is obtained via
     a separate torch.autograd.grad(..., inputs=activation) call, which asks
     autograd for the gradient w.r.t. a *specific* captured tensor - unambiguous
-    regardless of internal scheduling."""
+    regardless of internal scheduling.
+
+    Default target layer is layer2, not the final layer4: for a 64x64 input,
+    ResNet18's 32x total downsampling collapses layer4 to a 2x2 feature map,
+    which is too coarse to localize anything (any "peak" is forced to sit near
+    one of only 4 possible quadrant centers, regardless of what the model
+    actually attends to - discovered empirically before switching). layer2
+    (8x8 for a 64x64 input) is the standard resolution/semantic-depth tradeoff
+    for small inputs."""
 
     VIEWS = ("axial", "coronal", "sagittal")
 
-    def __init__(self, model):
+    def __init__(self, model, target_layer=None):
         self.model = model
         self.activations = []
-        model.backbone.layer4.register_forward_hook(self._save_activation)
+        target_layer = target_layer or model.backbone.layer2
+        target_layer.register_forward_hook(self._save_activation)
 
     def _save_activation(self, module, inp, output):
         self.activations.append(output)
