@@ -195,8 +195,12 @@ def process_scan(scan, output_dir, negatives_per_positive, rng):
             c1 = int(rng.integers(lo1, hi1))
             c2 = int(rng.integers(lo2, hi2))
 
+            # Two axis-aligned CUBE_SIZE cubes overlap iff every per-axis center
+            # delta is < CUBE_SIZE (an AABB/Chebyshev test). A Euclidean centroid
+            # distance threshold is a tighter (stricter-to-fail) test along
+            # diagonals and silently under-rejects real overlaps there.
             too_close = any(
-                np.sqrt((c0 - e0) ** 2 + (c1 - e1) ** 2 + (c2 - e2) ** 2) < CUBE_SIZE
+                abs(c0 - e0) < CUBE_SIZE and abs(c1 - e1) < CUBE_SIZE and abs(c2 - e2) < CUBE_SIZE
                 for e0, e1, e2 in centroids
             )
             if too_close:
@@ -216,6 +220,11 @@ def process_scan(scan, output_dir, negatives_per_positive, rng):
             if saved:
                 neg_count += 1
             break
+        else:
+            print(
+                f"  WARNING: {scan.patient_id} {scan.series_instance_uid[:20]}... "
+                f"neg {neg_idx}: no valid placement found in 50 attempts, skipped"
+            )
 
     return pos_count, neg_count
 
