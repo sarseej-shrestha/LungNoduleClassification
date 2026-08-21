@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import confusion_matrix
 
-from src.config_v2 import config_v2
+from src import config_v2 as config_v2
 from src.architecture_v2 import create_model_v2, SharedResNet_V2
 
 SEED = 42

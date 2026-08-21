@@ -16,7 +16,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from src.config_v2 import config_v2
+from src import config_v2 as config_v2
 from src.architecture_v2 import load_model_v2
 
 CUBE_SIZE = 64
@@ -198,7 +198,7 @@ def generate_plots(results, high_risk, mean_unc):
             )
             ax.axis("off")
 
-plt.tight_layout()
+    plt.tight_layout()
     plt.savefig("output/edge_cases.png", dpi=80)
     plt.close()
     
